@@ -1,78 +1,63 @@
 # magpie-kunbot
 
-A provider plugin for kunbot, written for [magpie](https://usemagpie.ai/docs/zh/plugins).
+kunbot 的 [magpie](https://usemagpie.ai/docs/zh/plugins) 提供商插件。
 
-It signs in with an API key, and it reads the site's own published catalogs
-rather than carrying a hard-coded model list, so the picker shows what the site
-is actually serving. Proprietary models (Claude, GPT) are added for a key that
-has Proprietary Access, and their Pt balance is reported as quota.
+使用 API Key 登录，直接读取站点发布的模型目录而非硬编码模型列表，模型选择器会自动显示站点当前提供的模型。当 Key 具备专有模型访问权限（Proprietary Access）时会追加专有模型，并将 Pt 余额作为额度上报。
 
-There are two hosts, and they are not configurable:
+固定涉及两个站点地址，无需手动配置：
 
-| | |
+| 地址 | 说明 |
 | --- | --- |
-| `ant.kunbot.org` | the status site: the model catalogs, and the balance session |
-| `anthropic.kunbot.org` | the model gateway, as named by the site's catalogs |
+| `ant.kunbot.org` | 状态站：提供模型目录、公告与余额鉴权会话 |
+| `anthropic.kunbot.org` | 模型网关：所有模型请求均发送至此 |
 
-## What it does
+## 功能特性
 
-- **Reads the site's model catalog.** `/configs/pi/models.json` is the same
-  file the site hands to pi users. Every open-weight provider is taken from it
-  with its own base URL, API, context window, max output, cost and whether it
-  reasons. Nothing is hard-coded, so a new route or a changed limit shows up on
-  its own.
-- **Adds proprietary models for keys that have access.** `/api/proprietary`
-  names them; the gateway serves them from its root, not from a route. They are
-  listed only when the key is known to have Proprietary Access, and marked
-  `rate: 1` so magpie does not spend a metered model first.
-- **Reports the allowance.** `magpie quota` shows the key's Pt balance.
+- **动态读取站点模型目录**：从 `/configs/pi/models.json` 获取所有开源权重模型配置，包括线路 Base URL、协议、上下文大小、输出上限、费用及推理开关。无需硬编码，站点新增线路或调整限制会自动同步。
+- **按路线适配推理档位**：根据目录中的 `thinkingLevelMap` 精确提供该线路支持的推理强度（如 `low`、`high`、`max`），避免发送不支持的档位。
+- **支持专有模型**：当专有模型开放且 Key 拥有权限时自动加入模型列表；停运时自动回退为纯开源线路。
+- **额度展示**：在 `magpie quota` 中显示当前 Key 的 Pt 余额；若 Key 未登记或未开通专有权限会给出明确提示。
 
-Nothing is hidden based on whether the site currently reports a route or model
-as up. The plugin does not read the site's health feeds and does not filter the
-catalog by them: what an agent may ask for is the site's decision to make, not
-one this plugin should guess at.
+插件不会根据站点当前的健康检查状态隐藏任何模型：线路是否可用交由站点自身决定，插件不代为过滤。
 
-## Endpoints
+## 接口与路由
 
-One provider, many endpoints. The site names a different address for each
-route, and magpie resolves them per model, so they all live in one provider:
+在 magpie 中聚合为一个 `kunbot` 提供商，底层按模型分发到不同端点：
 
-| Models | Address | Protocol |
+| 模型类型 | 请求地址 | 协议 |
 | --- | --- | --- |
-| open-weight routes | `anthropic.kunbot.org/<route>/v1` | OpenAI Chat Completions |
-| proprietary models | `anthropic.kunbot.org` | Anthropic Messages |
+| 开源权重模型 | `anthropic.kunbot.org/<route>/v1` | OpenAI Chat Completions |
+| 专有模型 | `anthropic.kunbot.org` | Anthropic Messages |
 
-Every one of those addresses is read from the site's catalogs and used as is;
-none of them is written here.
+所有地址直接使用站点目录所提供的值。
 
-## Install
+## 安装
 
-From GitHub:
+通过 GitHub 安装：
 
 ```sh
 magpie plugin add github:wsyzxjn/magpie-kunbot
 ```
 
-Or as a folder, straight from a clone:
+或从本地克隆安装：
 
 ```sh
 magpie plugin add ./kunbot-magpie-plugin
 ```
 
-Then sign in:
+登录凭据：
 
 ```sh
 magpie plugin login kunbot
 ```
 
-It asks for the API key and nothing else — the two hostnames above are fixed.
+按提示输入 API Key 即可。
 
-In the app: open 插件, add the plugin, then sign in on the `kunbot` row.
+在客户端应用中：打开「插件」，添加该插件，然后在 `kunbot` 提供商行点击登录。
 
-## Model names
+## 模型名称规则
 
-A model is named `<route>/<model id>`, and the route is the same segment that
-appears in the route's URL:
+开源权重模型采用 `<route>/<model_id>` 格式命名，其中 `route` 为接口路径中的分流标识：
 
 ```
 kunbot/maid/deepseek-ai/DeepSeek-V4.1-Flash
@@ -80,91 +65,29 @@ kunbot/empurple/moonshotai/Kimi-K3
 kunbot/7sref/gemini-3-pro-image
 ```
 
-The route is part of the key because one gateway serves many routes and two of
-them can serve the same model id: `maid` and `maiden` both serve
-`deepseek-ai/DeepSeek-V4.1-Flash` today, on different upstreams.
+路由段包含在模型键名中，以避免不同线路提供相同模型 ID 时发生冲突。
 
-Proprietary models are named by their own id, with no route:
+专有模型开放时直接使用其自身 ID（无路由段）：
 
 ```
 kunbot/claude-opus-5
 kunbot/gpt-5.6
 ```
 
-## What it stores, and what it sends where
+## 数据流与凭据安全性
 
-The key is kept by magpie in `plugin-auth.json` (mode 600) under the `kunbot`
-provider.
+API Key 存放在 magpie 的 `plugin-auth.json`（权限模式 600）中。
 
-**Model requests** go to the gateway with the key, as a bearer token. Nothing
-else leaves the machine for them, and they go only to the addresses the
-catalogs name.
+- **模型请求**：带 `Authorization: Bearer <key>` 请求头直接发送至模型网关 `anthropic.kunbot.org`。
+- **余额读取机制**：模型网关未鉴权读取返回 403，查询余额采用与网页端一致的流程：通过 `POST /api/proprietary/key` 向状态站 `ant.kunbot.org` 提交 Key 获取 Session Cookie，再读取 `/api/proprietary/access`。因此运行 `magpie quota` 时 Key 会发往状态站，查询结果在本地缓存 30 分钟。如果不想向状态站发送 Key，不执行 `magpie quota` 即可，模型请求完全不受影响。
 
-**Reading the balance is different, and worth being explicit about.** The
-gateway refuses every unauthenticated read with a bare `403`, so the plugin
-cannot ask it for a balance on its own. The only way to learn a key's Pt
-balance is the flow the site's own web page uses: `POST /api/proprietary/key`
-with the key, which leaves a session behind that `/api/proprietary/access` then
-reads. So when you run `magpie quota`, your key is sent to `ant.kunbot.org`,
-the status site — the same request the site's "paste your key, see your
-balance" box makes, but it is still your key reaching a second host, and a
-different one from the gateway your model requests are signed for.
+## 目录结构
 
-Consequences worth knowing:
-
-- The key reaches the status site as well as the gateway.
-- The status site keeps the key in an `HttpOnly` session cookie, and the page
-  can show it back to you. Its privacy page says it stores your lxns user id
-  and display name alongside a key you sign in with there.
-- A failure here never blocks a model request. If the balance cannot be read,
-  `magpie quota` says so instead of showing a zero balance.
-- The verdict is cached for 30 minutes, so `magpie quota` does not re-post your
-  key on every read. A new key still reaches the gateway on its own within a
-  few minutes; a key the gateway has not seen is reported as unregistered.
-
-If you would rather not send your key to the status site, do not run
-`magpie quota`. Everything else — signing in, listing models, and every model
-request — is unaffected, and the open-weight routes do not need it at all.
-
-## Layout
-
-| File | What it holds |
+| 文件 | 说明 |
 | --- | --- |
-| `index.mjs` | The plugin: the provider, sign-in, the request signer, the catalog reader and the usage hook. |
-| `package.json` | The package manifest, with magpie's `maxConcurrency` under `magpie`. |
+| `index.mjs` | 插件核心实现：提供商配置、登录、请求鉴权、目录解析与额度钩子 |
+| `package.json` | 包清单与 magpie 并发配置 |
 
-The entry module exports one plugin function and an `_internal` object holding
-the pure functions the tests reach for, so magpie does not mistake a helper for
-a plugin.
-
-### A note on writing models here
-
-Models returned from the `provider.models` hook are in magpie's own shape, not
-the `config` hook's. A model there is spread from one magpie already normalised,
-and its address is set with `api: { id, url, npm }`. Writing `id` or
-`provider: { npm, api }` on this path is silently dropped — no error, the model
-just falls back to the provider's default address, which would send every
-request to the status site.
-
-## Try it in a sandbox
-
-Keep a plugin you are still writing away from the magpie you use every day by
-giving it a home of its own:
-
-```sh
-sb=$(mktemp -d)
-m() { env HOME=$sb XDG_CONFIG_HOME=$sb/.config XDG_CACHE_HOME=$sb/.cache \
-      MAGPIE_ADDR=127.0.0.1:3499 magpie "$@"; }
-
-m plugin add ./kunbot-magpie-plugin
-m plugin login kunbot
-m provider test kunbot
-m quota
-```
-
-`m provider test` sends one very small request per API, so it is the quickest
-way to tell a bad key from a good one.
-
-## License
+## 许可证
 
 MIT
