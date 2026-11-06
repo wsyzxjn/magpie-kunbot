@@ -1,7 +1,6 @@
 # magpie-kunbot
 
-A provider plugin for kunbot, written for [OpenCode](https://opencode.ai) and
-[magpie](https://usemagpie.ai/docs/zh/plugins).
+A provider plugin for kunbot, written for [magpie](https://usemagpie.ai/docs/zh/plugins).
 
 It signs in with an API key, and it reads the site's own published catalogs
 rather than carrying a hard-coded model list, so the picker shows what the site
@@ -95,7 +94,7 @@ kunbot/gpt-5.6
 ## What it stores, and what it sends where
 
 The key is kept by magpie in `plugin-auth.json` (mode 600) under the `kunbot`
-provider, in the same shape OpenCode uses.
+provider.
 
 **Model requests** go to the gateway with the key, as a bearer token. Nothing
 else leaves the machine for them, and they go only to the addresses the

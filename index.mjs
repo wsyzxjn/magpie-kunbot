@@ -1,4 +1,4 @@
-// kunbot's model gateway, as a provider plugin for OpenCode and magpie.
+// kunbot's model gateway, as a provider plugin for magpie.
 //
 // The site serves two kinds of endpoint, and each kind knows its own address:
 //
@@ -22,7 +22,7 @@
 // addresses are written here.
 
 const PROVIDER = "kunbot"
-const CLIENT = "opencode-kunbot/0.1.0"
+const CLIENT = "magpie-kunbot/0.1.0"
 
 // The status site: the one address the plugin knows, asked for nothing at
 // sign-in. It serves the catalogs and holds the balance session; the model

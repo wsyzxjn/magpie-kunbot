@@ -5,7 +5,7 @@
   "type": "module",
   "main": "./index.mjs",
   "files": ["index.mjs", "README.md"],
-  "keywords": ["opencode", "opencode-plugin", "magpie", "kunbot", "provider", "quota"],
+  "keywords": ["magpie", "kunbot", "provider", "quota"],
   "license": "MIT",
   "author": "",
   "repository": {
