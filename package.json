@@ -1,0 +1,19 @@
+{
+  "name": "magpie-kunbot",
+  "version": "0.1.0",
+  "description": "Provider plugin for kunbot: reads the site's own published model catalog, serves every open-weight route and proprietary model from the one gateway, and reports Pt balance as quota.",
+  "type": "module",
+  "main": "./index.mjs",
+  "files": ["index.mjs", "README.md"],
+  "keywords": ["opencode", "opencode-plugin", "magpie", "kunbot", "provider", "quota"],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wsyzxjn/magpie-kunbot.git"
+  },
+  "magpie": {
+    "icon": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%23000' stroke='%23fff' stroke-width='1.5'/%3E%3C/svg%3E",
+    "maxConcurrency": 8
+  }
+}
