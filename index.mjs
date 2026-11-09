@@ -1,6 +1,6 @@
 // kunbot's model gateway, as a provider plugin for magpie.
 //
-// The site serves two kinds of endpoint, and each kind knows its own address:
+// The site serves three kinds of endpoint, and each kind knows its own address:
 //
 //   open-weight   one endpoint per route, each with its own baseUrl, the API it
 //                 speaks, and the full model spec (context window, max output,
@@ -12,8 +12,12 @@
 //                 proprietary feed states as its own `base_url`. A request goes
 //                 to that address, not to the status site. These need
 //                 "Proprietary Access" on the key and are billed in Pt.
+//   image         routes the status site labels "Image Generation", whose note
+//                 names the model they serve. They are not in the pi catalog,
+//                 and a request goes to <base_url>/<route>/v1 asking for an
+//                 image output modality.
 //
-// Neither feed is filtered by whether it says a model is up. A route or model
+// No feed is filtered by whether it says a model is up. A route or model
 // the site reports as down is still listed: the probe is the site's business,
 // not a decision this plugin should make about what an agent may ask for.
 //
@@ -22,7 +26,7 @@
 // addresses are written here.
 
 const PROVIDER = "kunbot"
-const CLIENT = "magpie-kunbot/0.1.0"
+const CLIENT = "magpie-kunbot/0.1.1"
 
 // The status site: the one address the plugin knows, asked for nothing at
 // sign-in. It serves the catalogs and holds the balance session; the model
@@ -41,12 +45,14 @@ const num = (v) => {
   return Number.isFinite(n) ? n : null
 }
 
-// The four reads this plugin makes of the status site. All of them are the
+// The five reads this plugin makes of the status site. All of them are the
 // site's own endpoints; none of them takes a key except the balance session.
 const ENDPOINTS = {
-  // The catalogs. Both are public.
+  // The public reads.
   catalog: `${SITE}/configs/pi/models.json`,
   proprietary: `${SITE}/api/proprietary`,
+  // The route list. Its image routes are not in the pi catalog.
+  openweight: `${SITE}/api/openweight`,
   // The balance flow. POST key is the site's own "paste a key, see your
   // balance" endpoint: it checks the key against the gateway and, if it is a
   // working key, leaves a session behind that /access then reads. It is the
@@ -158,6 +164,143 @@ function proprietaryModels(feed) {
   return Object.keys(out).length ? out : null
 }
 
+// The status site labels an image-generation route "Image Generation" and
+// names the model it serves in the route's note. Those routes stay out of the
+// pi catalog, so they are read here. The model is named `<route>/<model>` like
+// the chat routes, and magpie asks the route's /v1 for it with
+// `modalities: ["image"]`.
+const IMAGE_ROUTE_LABEL = "image generation"
+
+function imageIdsFromNote(note) {
+  const found = /supported\s+models?\s*[:：]\s*([^\n]+)/i.exec(String(note ?? ""))
+  if (!found) return []
+  return found[1]
+    .split(/[,;，；、]/)
+    .map((part) => part.trim().split(/\s+/)[0]?.replace(/[（(].*$/, "").replace(/[.。]+$/, ""))
+    .filter(Boolean)
+}
+
+function imagesFromOpenweight(feed) {
+  const base = String(feed?.base_url ?? "").replace(/\/+$/, "")
+  if (!base) return null
+
+  const out = {}
+  for (const route of Array.isArray(feed?.routes) ? feed.routes : []) {
+    if (String(route?.label ?? "").trim().toLowerCase() !== IMAGE_ROUTE_LABEL) continue
+    const slug = String(route?.slug ?? "").trim()
+    if (!slug) continue
+
+    const listed = (Array.isArray(route?.models) ? route.models : [])
+      .map((m) => (typeof m === "string" ? m : m?.id))
+      .filter(Boolean)
+    const ids = listed.length ? listed : imageIdsFromNote(route?.note)
+    const usable = ids.filter((id) => !id.includes("?"))
+
+    for (const id of usable) {
+      out[`${slug}/${id}`] = {
+        name: id,
+        id,
+        provider: { npm: "@ai-sdk/openai-compatible", api: `${base}/${slug}/v1` },
+        modalities: { input: ["text"], output: ["image"] },
+        reasoning: false,
+        tool_call: false,
+      }
+    }
+  }
+  return Object.keys(out).length ? out : null
+}
+
+const MODALITIES = ["text", "image", "audio", "video"]
+const modalitiesOf = (list) => Object.fromEntries(MODALITIES.map((k) => [k, (list ?? ["text"]).includes(k)]))
+
+function imageModelForHook(template, m) {
+  const base = { ...(template ?? {}) }
+  delete base.id
+  delete base.provider
+  return {
+    ...base,
+    name: m.name,
+    limit: { context: 0, output: 0 },
+    reasoning: false,
+    tool_call: false,
+    modalities: m.modalities,
+    capabilities: {
+      ...(base.capabilities ?? {}),
+      reasoning: false,
+      attachment: false,
+      toolcall: false,
+      input: modalitiesOf(m.modalities?.input),
+      output: modalitiesOf(m.modalities?.output),
+    },
+    cost: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
+    variants: {},
+    api: { id: m.id, url: m.provider.api, npm: m.provider.npm },
+  }
+}
+
+const urlOf = (input) => (typeof input === "string" ? input : input instanceof URL ? input.href : input?.url ?? String(input))
+
+function chatToImagesBody(body) {
+  const texts = []
+  const images = []
+  for (const message of Array.isArray(body?.messages) ? body.messages : []) {
+    if (typeof message?.content === "string") {
+      texts.push(message.content)
+      continue
+    }
+    for (const part of Array.isArray(message?.content) ? message.content : []) {
+      if (part?.type === "text" && typeof part.text === "string") texts.push(part.text)
+      const url = part?.image_url?.url ?? part?.image_url
+      if (typeof url === "string") images.push(url)
+    }
+  }
+  return {
+    model: body?.model,
+    prompt: texts.join("\n"),
+    response_format: "b64_json",
+    ...(images.length ? { images } : {}),
+  }
+}
+
+async function imagesToChatResponse(res) {
+  if (!res.ok) return res
+  const text = await res.text()
+  const same = () => {
+    const headers = new Headers(res.headers)
+    headers.delete("content-length")
+    headers.delete("content-encoding")
+    return new Response(text, { status: res.status, statusText: res.statusText, headers })
+  }
+  let got
+  try {
+    got = JSON.parse(text)
+  } catch {
+    return same()
+  }
+  const images = (Array.isArray(got?.data) ? got.data : [])
+    .map((d) => {
+      if (typeof d?.b64_json === "string") {
+        return { image_url: { url: `data:${d.mime_type ?? "image/png"};base64,${d.b64_json}` } }
+      }
+      return typeof d?.url === "string" ? { image_url: { url: d.url } } : null
+    })
+    .filter(Boolean)
+  if (!images.length) return same()
+
+  const headers = new Headers(res.headers)
+  headers.set("content-type", "application/json")
+  headers.delete("content-length")
+  headers.delete("content-encoding")
+  return new Response(
+    JSON.stringify({
+      id: got?.id ?? `kunbot-image-${Date.now()}`,
+      choices: [{ index: 0, message: { role: "assistant", content: "", images } }],
+      ...(got?.usage ? { usage: got.usage } : {}),
+    }),
+    { status: res.status, statusText: res.statusText, headers },
+  )
+}
+
 // The site's own UI signs a working key in and reads the balance back through
 // a session. This does the same, caching the verdict for a while so
 // `magpie quota` does not re-post the key on every read.
@@ -222,23 +365,38 @@ export const KunbotAntPlugin = async ({ client }) => {
     } catch {}
   }
 
-  // The two catalogs are public, so they are read once and kept for a while
+  // The public feeds are read once and kept for a while
   // rather than on every hook call.
-  let cache = { until: 0, models: null, proprietary: null }
+  let cache = { until: 0, models: null, proprietary: null, images: null }
+  let imageChatPaths = new Set()
   const CATALOG_TTL = 5 * 60 * 1000
 
   const refresh = async () => {
     if (cache && cache.until > Date.now() && cache.models) return cache
-    const [catalog, proprietary] = await Promise.allSettled([
+    const [catalog, proprietary, openweight] = await Promise.allSettled([
       getJSON(ENDPOINTS.catalog),
       getJSON(ENDPOINTS.proprietary),
+      getJSON(ENDPOINTS.openweight),
     ])
     const models = catalog.status === "fulfilled" ? modelsFromCatalog(catalog.value) : null
     if (!models) throw new Error("the site's model catalog could not be read")
+    const images = openweight.status === "fulfilled" ? imagesFromOpenweight(openweight.value) : null
+    imageChatPaths = new Set(
+      Object.values(images ?? {})
+        .map((m) => {
+          try {
+            return `${new URL(m.provider.api).pathname.replace(/\/+$/, "")}/chat/completions`
+          } catch {
+            return ""
+          }
+        })
+        .filter(Boolean),
+    )
     cache = {
       until: Date.now() + CATALOG_TTL,
       models,
       proprietary: proprietary.status === "fulfilled" ? proprietaryModels(proprietary.value) : null,
+      images,
     }
     return cache
   }
@@ -260,8 +418,11 @@ export const KunbotAntPlugin = async ({ client }) => {
         models: {},
       }
       try {
-        const { models } = await refresh()
+        const { models, images } = await refresh()
         for (const [k, m] of Object.entries(models)) {
+          cfg.provider[PROVIDER].models[k] ??= m
+        }
+        for (const [k, m] of Object.entries(images ?? {})) {
           cfg.provider[PROVIDER].models[k] ??= m
         }
       } catch (e) {
@@ -294,11 +455,26 @@ export const KunbotAntPlugin = async ({ client }) => {
         if (auth?.type !== "api" || !auth.key) return {}
         return {
           async fetch(input, init) {
-            const headers = new Headers(init?.headers)
+            let requestInput = input
+            let requestInit = init
+            try {
+              const url = new URL(urlOf(input))
+              if (imageChatPaths.has(url.pathname) && typeof init?.body === "string") {
+                const body = JSON.parse(init.body)
+                if (Array.isArray(body?.modalities) && body.modalities.includes("image")) {
+                  url.pathname = url.pathname.replace(/\/chat\/completions$/, "/images/generations")
+                  requestInput = url.href
+                  requestInit = { ...init, body: JSON.stringify(chatToImagesBody(body)) }
+                }
+              }
+            } catch {}
+
+            const headers = new Headers(requestInit?.headers)
             headers.set("authorization", `Bearer ${auth.key}`)
             headers.set("x-api-key", auth.key)
             headers.set("x-kunbot-client", CLIENT)
-            return fetch(input, { ...init, headers })
+            const res = await fetch(requestInput, { ...requestInit, headers })
+            return requestInit === init ? res : imagesToChatResponse(res)
           },
         }
       },
@@ -390,6 +566,13 @@ export const KunbotAntPlugin = async ({ client }) => {
           }
         }
 
+        // Image-generation routes are not in the pi catalog. Their models get
+        // the route's address and an image output modality, which is what
+        // magpie's /v1/images/generations asks a plugin model for.
+        for (const [key, m] of Object.entries(cat.images ?? {})) {
+          out[key] = imageModelForHook(template, m)
+        }
+
         // Proprietary models join the list only for a key that has Proprietary
         // Access; without it the gateway answers 403 and listing them would
         // only produce failures. The balance flow is best-effort, so a key the
@@ -421,4 +604,4 @@ export const KunbotAntPlugin = async ({ client }) => {
 
 // Tests need these; the community convention is to hang them off one object
 // so magpie does not mistake a helper for a plugin.
-export const _internal = { modelsFromCatalog, proprietaryModels, readAccess }
+export const _internal = { modelsFromCatalog, proprietaryModels, imagesFromOpenweight, imageIdsFromNote, chatToImagesBody, readAccess }
