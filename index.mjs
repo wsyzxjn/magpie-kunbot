@@ -26,7 +26,7 @@
 // addresses are written here.
 
 const PROVIDER = "kunbot"
-const CLIENT = "magpie-kunbot/0.1.1"
+const CLIENT = "magpie-kunbot/0.1.2"
 
 // The status site: the one address the plugin knows, asked for nothing at
 // sign-in. It serves the catalogs and holds the balance session; the model
@@ -167,8 +167,8 @@ function proprietaryModels(feed) {
 // The status site labels an image-generation route "Image Generation" and
 // names the model it serves in the route's note. Those routes stay out of the
 // pi catalog, so they are read here. The model is named `<route>/<model>` like
-// the chat routes, and magpie asks the route's /v1 for it with
-// `modalities: ["image"]`.
+// the chat routes, and magpie 0.1.3423+ sends image-only models to the
+// route's /v1/images/generations.
 const IMAGE_ROUTE_LABEL = "image generation"
 
 function imageIdsFromNote(note) {
@@ -238,69 +238,6 @@ function imageModelForHook(template, m) {
   }
 }
 
-const urlOf = (input) => (typeof input === "string" ? input : input instanceof URL ? input.href : input?.url ?? String(input))
-
-function chatToImagesBody(body) {
-  const texts = []
-  const images = []
-  for (const message of Array.isArray(body?.messages) ? body.messages : []) {
-    if (typeof message?.content === "string") {
-      texts.push(message.content)
-      continue
-    }
-    for (const part of Array.isArray(message?.content) ? message.content : []) {
-      if (part?.type === "text" && typeof part.text === "string") texts.push(part.text)
-      const url = part?.image_url?.url ?? part?.image_url
-      if (typeof url === "string") images.push(url)
-    }
-  }
-  return {
-    model: body?.model,
-    prompt: texts.join("\n"),
-    response_format: "b64_json",
-    ...(images.length ? { images } : {}),
-  }
-}
-
-async function imagesToChatResponse(res) {
-  if (!res.ok) return res
-  const text = await res.text()
-  const same = () => {
-    const headers = new Headers(res.headers)
-    headers.delete("content-length")
-    headers.delete("content-encoding")
-    return new Response(text, { status: res.status, statusText: res.statusText, headers })
-  }
-  let got
-  try {
-    got = JSON.parse(text)
-  } catch {
-    return same()
-  }
-  const images = (Array.isArray(got?.data) ? got.data : [])
-    .map((d) => {
-      if (typeof d?.b64_json === "string") {
-        return { image_url: { url: `data:${d.mime_type ?? "image/png"};base64,${d.b64_json}` } }
-      }
-      return typeof d?.url === "string" ? { image_url: { url: d.url } } : null
-    })
-    .filter(Boolean)
-  if (!images.length) return same()
-
-  const headers = new Headers(res.headers)
-  headers.set("content-type", "application/json")
-  headers.delete("content-length")
-  headers.delete("content-encoding")
-  return new Response(
-    JSON.stringify({
-      id: got?.id ?? `kunbot-image-${Date.now()}`,
-      choices: [{ index: 0, message: { role: "assistant", content: "", images } }],
-      ...(got?.usage ? { usage: got.usage } : {}),
-    }),
-    { status: res.status, statusText: res.statusText, headers },
-  )
-}
-
 // The site's own UI signs a working key in and reads the balance back through
 // a session. This does the same, caching the verdict for a while so
 // `magpie quota` does not re-post the key on every read.
@@ -368,7 +305,6 @@ export const KunbotAntPlugin = async ({ client }) => {
   // The public feeds are read once and kept for a while
   // rather than on every hook call.
   let cache = { until: 0, models: null, proprietary: null, images: null }
-  let imageChatPaths = new Set()
   const CATALOG_TTL = 5 * 60 * 1000
 
   const refresh = async () => {
@@ -381,17 +317,6 @@ export const KunbotAntPlugin = async ({ client }) => {
     const models = catalog.status === "fulfilled" ? modelsFromCatalog(catalog.value) : null
     if (!models) throw new Error("the site's model catalog could not be read")
     const images = openweight.status === "fulfilled" ? imagesFromOpenweight(openweight.value) : null
-    imageChatPaths = new Set(
-      Object.values(images ?? {})
-        .map((m) => {
-          try {
-            return `${new URL(m.provider.api).pathname.replace(/\/+$/, "")}/chat/completions`
-          } catch {
-            return ""
-          }
-        })
-        .filter(Boolean),
-    )
     cache = {
       until: Date.now() + CATALOG_TTL,
       models,
@@ -455,26 +380,11 @@ export const KunbotAntPlugin = async ({ client }) => {
         if (auth?.type !== "api" || !auth.key) return {}
         return {
           async fetch(input, init) {
-            let requestInput = input
-            let requestInit = init
-            try {
-              const url = new URL(urlOf(input))
-              if (imageChatPaths.has(url.pathname) && typeof init?.body === "string") {
-                const body = JSON.parse(init.body)
-                if (Array.isArray(body?.modalities) && body.modalities.includes("image")) {
-                  url.pathname = url.pathname.replace(/\/chat\/completions$/, "/images/generations")
-                  requestInput = url.href
-                  requestInit = { ...init, body: JSON.stringify(chatToImagesBody(body)) }
-                }
-              }
-            } catch {}
-
-            const headers = new Headers(requestInit?.headers)
+            const headers = new Headers(init?.headers)
             headers.set("authorization", `Bearer ${auth.key}`)
             headers.set("x-api-key", auth.key)
             headers.set("x-kunbot-client", CLIENT)
-            const res = await fetch(requestInput, { ...requestInit, headers })
-            return requestInit === init ? res : imagesToChatResponse(res)
+            return fetch(input, { ...init, headers })
           },
         }
       },
@@ -604,4 +514,4 @@ export const KunbotAntPlugin = async ({ client }) => {
 
 // Tests need these; the community convention is to hang them off one object
 // so magpie does not mistake a helper for a plugin.
-export const _internal = { modelsFromCatalog, proprietaryModels, imagesFromOpenweight, imageIdsFromNote, chatToImagesBody, readAccess }
+export const _internal = { modelsFromCatalog, proprietaryModels, imagesFromOpenweight, imageIdsFromNote, readAccess }

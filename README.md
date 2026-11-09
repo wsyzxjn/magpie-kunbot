@@ -15,7 +15,7 @@ kunbot 的 [magpie](https://usemagpie.ai/docs/zh/plugins) 提供商插件。
 
 - **动态读取站点模型目录**：从 `/configs/pi/models.json` 获取所有开源权重模型配置，包括线路 Base URL、协议、上下文大小、输出上限、费用及推理开关。无需硬编码，站点新增线路或调整限制会自动同步。
 - **按路线适配推理档位**：根据目录中的 `thinkingLevelMap` 精确提供该线路支持的推理强度（如 `low`、`high`、`max`），避免发送不支持的档位。
-- **自动发现图像线路**：读取 `/api/openweight`，把 `label` 为 `Image Generation` 的路由按备注中的 `Supported Model:` 加入图像模型；请求由插件转换为该线路的 `/v1/images/generations`。
+- **自动发现图像线路**：读取 `/api/openweight`，把 `label` 为 `Image Generation` 的路由按备注中的 `Supported Model:` 加入图像模型，并声明为只输出图片；magpie 0.1.3423+ 会把它列入图像模型并通过插件的 `fetch` 请求该线路的 `/v1/images/generations`。
 - **支持专有模型**：当专有模型开放且 Key 拥有权限时自动加入模型列表；停运时自动回退为纯开源线路。
 - **额度展示**：在 `magpie quota` 中显示当前 Key 的 Pt 余额；若 Key 未登记或未开通专有权限会给出明确提示。
 
@@ -37,6 +37,8 @@ kunbot 的 [magpie](https://usemagpie.ai/docs/zh/plugins) 提供商插件。
 聊天与图像模型地址由站点目录和路由列表提供，专有模型地址由专有模型接口提供。
 
 ## 安装
+
+图像模型需要 magpie `0.1.3423` 或更新版本；更早的版本只按模型名判断图像模型。
 
 通过 GitHub 安装：
 
