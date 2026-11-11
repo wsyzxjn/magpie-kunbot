@@ -1,6 +1,6 @@
 {
   "name": "magpie-kunbot",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Provider plugin for kunbot: reads the site's own published model catalog, serves every open-weight route and proprietary model from the one gateway, and reports Pt balance as quota.",
   "type": "module",
   "main": "./index.mjs",

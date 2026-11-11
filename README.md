@@ -4,12 +4,12 @@ kunbot 的 [magpie](https://usemagpie.ai/docs/zh/plugins) 提供商插件。
 
 使用 API Key 登录，直接读取站点发布的模型目录而非硬编码模型列表，模型选择器会自动显示站点当前提供的模型。当 Key 具备专有模型访问权限（Proprietary Access）时会追加专有模型，并将 Pt 余额作为额度上报。
 
-固定涉及两个站点地址，无需手动配置：
+状态站地址可在登录时修改，默认是 `ant.kunbot.org`；模型网关地址由站点目录提供，不能单独手填：
 
 | 地址 | 说明 |
 | --- | --- |
-| `ant.kunbot.org` | 状态站：提供模型目录、公告与余额鉴权会话 |
-| `anthropic.kunbot.org` | 模型网关：所有模型请求均发送至此 |
+| `ant.kunbot.org` | 默认状态站：提供模型目录、公告与余额鉴权会话 |
+| 目录返回值 | 模型网关：聊天、图像与私有模型请求按目录地址发送 |
 
 ## 功能特性
 
@@ -30,9 +30,9 @@ kunbot 的 [magpie](https://usemagpie.ai/docs/zh/plugins) 提供商插件。
 
 | 模型类型 | 请求地址 | 协议 |
 | --- | --- | --- |
-| 开源权重模型 | `anthropic.kunbot.org/<route>/v1` | OpenAI Chat Completions |
-| 图像生成模型 | `anthropic.kunbot.org/<route>/v1/images/generations` | OpenAI Images API |
-| 专有模型 | `anthropic.kunbot.org` | Anthropic Messages |
+| 开源权重模型 | 目录提供的 `<base>/<route>/v1` | OpenAI Chat Completions |
+| 图像生成模型 | 路由提供的 `<base>/<route>/v1/images/generations` | OpenAI Images API |
+| 专有模型 | 专有模型接口提供的 `base_url` | Anthropic Messages |
 
 聊天与图像模型地址由站点目录和路由列表提供，专有模型地址由专有模型接口提供。
 
@@ -58,9 +58,9 @@ magpie plugin add ./kunbot-magpie-plugin
 magpie plugin login kunbot
 ```
 
-按提示输入 API Key 即可。
+先输入 Base URL（留空使用 `https://ant.kunbot.org`），再输入 API Key。
 
-在客户端应用中：打开「插件」，添加该插件，然后在 `kunbot` 提供商行点击登录。
+在客户端应用中：打开「插件」，添加该插件，然后在 `kunbot` 提供商行点击登录，按提示填写 Base URL 和 API Key。
 
 ## 模型名称规则
 
@@ -94,8 +94,8 @@ kunbot/gpt-5.6
 
 API Key 存放在 magpie 的 `plugin-auth.json`（权限模式 600）中。
 
-- **模型请求**：带 `Authorization: Bearer <key>` 请求头直接发送至模型网关 `anthropic.kunbot.org`。
-- **余额读取机制**：模型网关未鉴权读取返回 403，查询余额采用与网页端一致的流程：通过 `POST /api/proprietary/key` 向状态站 `ant.kunbot.org` 提交 Key 获取 Session Cookie，再读取 `/api/proprietary/access`。因此运行 `magpie quota` 时 Key 会发往状态站，查询结果在本地缓存 30 分钟。如果不想向状态站发送 Key，不执行 `magpie quota` 即可，模型请求完全不受影响。
+- **模型请求**：带 `Authorization: Bearer <key>` 请求头发送至目录提供的模型网关地址。
+- **余额读取机制**：模型网关未鉴权读取返回 403，查询余额采用与网页端一致的流程：通过 `POST /api/proprietary/key` 向登录时配置的状态站（默认 `ant.kunbot.org`）提交 Key 获取 Session Cookie，再读取 `/api/proprietary/access`。因此运行 `magpie quota` 时 Key 会发往状态站，查询结果在本地缓存 30 分钟。如果不想向状态站发送 Key，不执行 `magpie quota` 即可，模型请求完全不受影响。
 
 ## 目录结构
 

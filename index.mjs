@@ -21,17 +21,34 @@
 // the site reports as down is still listed: the probe is the site's business,
 // not a decision this plugin should make about what an agent may ask for.
 //
-// The status site is one address and is not configurable. Every endpoint below
-// is read from that site's own catalogs; none of the model or gateway
-// addresses are written here.
+// The status site defaults to ant.kunbot.org and can be changed when signing
+// in. Every endpoint below is read from that site's own catalogs; none of the
+// model or gateway addresses are written here.
 
 const PROVIDER = "kunbot"
-const CLIENT = "magpie-kunbot/0.1.2"
+const CLIENT = "magpie-kunbot/0.1.3"
 
-// The status site: the one address the plugin knows, asked for nothing at
-// sign-in. It serves the catalogs and holds the balance session; the model
-// gateway is a different host, and its address comes from the catalogs.
+// The default status site. It serves the catalogs and holds the balance
+// session; the model gateway is a different host, and its address comes from
+// the catalogs.
 const SITE = "https://ant.kunbot.org"
+
+const normalizeSite = (value) => {
+  const raw = String(value ?? "").trim()
+  if (!raw) return SITE
+  try {
+    const url = new URL(raw)
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null
+    url.hash = ""
+    url.search = ""
+    url.pathname = url.pathname.replace(/\/+$/, "")
+    return url.toString().replace(/\/+$/, "")
+  } catch {
+    return null
+  }
+}
+
+const siteOf = (auth) => normalizeSite(auth?.metadata?.baseURL) ?? SITE
 
 // The reasoning efforts magpie's agents already know how to send. A route's
 // thinkingLevelMap names the ones it takes: a level mapped to null is one the
@@ -47,21 +64,21 @@ const num = (v) => {
 
 // The five reads this plugin makes of the status site. All of them are the
 // site's own endpoints; none of them takes a key except the balance session.
-const ENDPOINTS = {
+const endpointsFor = (site) => ({
   // The public reads.
-  catalog: `${SITE}/configs/pi/models.json`,
-  proprietary: `${SITE}/api/proprietary`,
+  catalog: `${site}/configs/pi/models.json`,
+  proprietary: `${site}/api/proprietary`,
   // The route list. Its image routes are not in the pi catalog.
-  openweight: `${SITE}/api/openweight`,
+  openweight: `${site}/api/openweight`,
   // The balance flow. POST key is the site's own "paste a key, see your
   // balance" endpoint: it checks the key against the gateway and, if it is a
   // working key, leaves a session behind that /access then reads. It is the
   // documented behaviour of the site's own UI, and the only way to learn a
   // key's balance - the gateway refuses every unauthenticated read with a bare
   // 403. It does mean the key is POSTed to the status site; see the README.
-  keySession: `${SITE}/api/proprietary/key`,
-  access: `${SITE}/api/proprietary/access`,
-}
+  keySession: `${site}/api/proprietary/key`,
+  access: `${site}/api/proprietary/access`,
+})
 
 const getJSON = async (url, init) => {
   const res = await fetch(url, { ...init, headers: { accept: "application/json", ...(init?.headers ?? {}) } })
@@ -241,17 +258,18 @@ function imageModelForHook(template, m) {
 // The site's own UI signs a working key in and reads the balance back through
 // a session. This does the same, caching the verdict for a while so
 // `magpie quota` does not re-post the key on every read.
-// Keyed by the key: there is one status site.
+// Keyed by site and key: the same key can be signed in on two status sites.
 const sessions = new Map()
 const SESSION_TTL = 30 * 60 * 1000
 
-async function readAccess(key) {
-  const id = key
+async function readAccess(key, site = SITE) {
+  const id = `${site}\n${key}`
   const hit = sessions.get(id)
   if (hit && hit.until > Date.now()) return hit.value
   if (hit) sessions.delete(id)
 
-  const post = await fetch(ENDPOINTS.keySession, {
+  const endpoints = endpointsFor(site)
+  const post = await fetch(endpoints.keySession, {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json" },
     body: JSON.stringify({ key }),
@@ -287,7 +305,7 @@ async function readAccess(key) {
   const cookie = [...jar].map(([k, v]) => `${k}=${v}`).join("; ") || undefined
   if (!cookie) return { ok: false, error: "the site set no session for this key" }
 
-  const res = await fetch(ENDPOINTS.access, { headers: { accept: "application/json", cookie } })
+  const res = await fetch(endpoints.access, { headers: { accept: "application/json", cookie } })
   if (!res.ok) return { ok: false, error: `the site answered ${res.status}` }
   const body = await res.json().catch(() => null)
   const value = { ok: true, access: body }
@@ -304,26 +322,29 @@ export const KunbotAntPlugin = async ({ client }) => {
 
   // The public feeds are read once and kept for a while
   // rather than on every hook call.
-  let cache = { until: 0, models: null, proprietary: null, images: null }
+  const caches = new Map()
   const CATALOG_TTL = 5 * 60 * 1000
 
-  const refresh = async () => {
+  const refresh = async (site = SITE) => {
+    const cache = caches.get(site)
     if (cache && cache.until > Date.now() && cache.models) return cache
+    const endpoints = endpointsFor(site)
     const [catalog, proprietary, openweight] = await Promise.allSettled([
-      getJSON(ENDPOINTS.catalog),
-      getJSON(ENDPOINTS.proprietary),
-      getJSON(ENDPOINTS.openweight),
+      getJSON(endpoints.catalog),
+      getJSON(endpoints.proprietary),
+      getJSON(endpoints.openweight),
     ])
     const models = catalog.status === "fulfilled" ? modelsFromCatalog(catalog.value) : null
     if (!models) throw new Error("the site's model catalog could not be read")
     const images = openweight.status === "fulfilled" ? imagesFromOpenweight(openweight.value) : null
-    cache = {
+    const next = {
       until: Date.now() + CATALOG_TTL,
       models,
       proprietary: proprietary.status === "fulfilled" ? proprietaryModels(proprietary.value) : null,
       images,
     }
-    return cache
+    caches.set(site, next)
+    return next
   }
 
   return {
@@ -343,7 +364,7 @@ export const KunbotAntPlugin = async ({ client }) => {
         models: {},
       }
       try {
-        const { models, images } = await refresh()
+        const { models, images } = await refresh(SITE)
         for (const [k, m] of Object.entries(models)) {
           cfg.provider[PROVIDER].models[k] ??= m
         }
@@ -363,11 +384,22 @@ export const KunbotAntPlugin = async ({ client }) => {
           type: "api",
           label: "kunbot API key",
           placeholder: "sk-...",
-          async authorize() {
+          prompts: [
+            {
+              type: "text",
+              key: "baseURL",
+              message: "Base URL",
+              placeholder: SITE,
+              validate: (v) => (normalizeSite(v) ? undefined : "An http(s) address, e.g. https://ant.kunbot.org"),
+            },
+          ],
+          async authorize(inputs) {
             // The key is kept as typed. The balance read happens at usage
             // time (see `usage`), not here, so signing in never sends the key
             // anywhere on its own.
-            return { type: "success", metadata: {} }
+            const site = normalizeSite(inputs?.baseURL)
+            if (!site) return { type: "failed", error: "That base URL can't be read: " + (inputs?.baseURL || "empty") }
+            return { type: "success", metadata: { baseURL: site } }
           },
         },
       ],
@@ -396,10 +428,11 @@ export const KunbotAntPlugin = async ({ client }) => {
       async usage(getAuth) {
         const auth = await getAuth()
         if (auth?.type !== "api" || !auth.key) return { error: "Not signed in", windows: [] }
+        const site = siteOf(auth)
 
         let cat
         try {
-          cat = await refresh()
+          cat = await refresh(site)
         } catch (e) {
           return { error: `Couldn't read the site: ${e?.message ?? e}`, windows: [] }
         }
@@ -409,7 +442,7 @@ export const KunbotAntPlugin = async ({ client }) => {
         // is checked first and said plainly. The balance flow needs the key to
         // be known to the site, so a key the site has never seen is reported
         // as such rather than as a failure.
-        const access = await readAccess(auth.key)
+        const access = await readAccess(auth.key, site)
         const state = access?.access?.state
 
         if (state === "anonymous" || state === "no_pma" || state === "revoked") {
@@ -446,9 +479,10 @@ export const KunbotAntPlugin = async ({ client }) => {
     provider: {
       id: PROVIDER,
       async models(provider, { auth } = {}) {
+        const site = siteOf(auth)
         let cat
         try {
-          cat = await refresh()
+          cat = await refresh(site)
         } catch (e) {
           log("warn", `model list failed: ${e?.message ?? e}`)
           return provider.models
@@ -489,7 +523,7 @@ export const KunbotAntPlugin = async ({ client }) => {
         // site has never seen is treated as open-weight-only rather than as a
         // broken sign-in.
         if (auth?.type === "api" && auth.key && cat.proprietary) {
-          const access = await readAccess(auth.key)
+          const access = await readAccess(auth.key, site)
           if (access?.access?.state === "ok") {
             for (const [key, m] of Object.entries(cat.proprietary)) {
               out[key] = {
